@@ -113,6 +113,9 @@ kdl = { workspace = true }
 vergen = { version = "10.0.3", features = ["build"] }
 vergen-git2 = "10.0.3"
 
+proksi-oauth2 = { version = "0.5.3", path = "proksi-oauth2" }
+#pingora = { path = "../pingora/pingora", default-features = false, features = [
+
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "0.1.47"
 

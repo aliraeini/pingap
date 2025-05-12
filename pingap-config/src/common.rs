@@ -83,6 +83,8 @@ pub enum PluginCategory {
     CombinedAuth,
     /// JSON Web Token (JWT) authentication
     Jwt,
+    /// Oauth Authentication
+    OAuth2,
     /// Response caching
     Cache,
     /// URL redirection rules

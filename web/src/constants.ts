@@ -28,6 +28,7 @@ export function getPluginSteps(category: string) {
   pluginSupportSteps[PluginCategory.BASIC_AUTH] = [0];
   pluginSupportSteps[PluginCategory.COMBINED_AUTH] = [0];
   pluginSupportSteps[PluginCategory.JWT] = [0];
+  pluginSupportSteps[PluginCategory.OAUTH2] = [0];
   pluginSupportSteps[PluginCategory.CACHE] = [0];
   pluginSupportSteps[PluginCategory.REDIRECT] = [0];
   pluginSupportSteps[PluginCategory.PING] = [0];
@@ -144,6 +145,7 @@ export enum PluginCategory {
   BASIC_AUTH = "basic_auth",
   COMBINED_AUTH = "combined_auth",
   JWT = "jwt",
+  OAUTH2 = "oauth2",
   CACHE = "cache",
   REDIRECT = "redirect",
   PING = "ping",
