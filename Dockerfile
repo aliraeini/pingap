@@ -1,9 +1,9 @@
 FROM node:24-alpine AS webbuilder
-
-COPY . /pingap
 RUN apk update \
-  && apk add git make \
-  && cd /pingap \
+  && apk add git make
+COPY web /pingap/web
+COPY Makefile /pingap/Makefile
+RUN  cd /pingap \
   && make build-web
 
 # Release toolchain - keep in step with the `toolchain:` pins in
@@ -13,11 +13,16 @@ FROM rust:1.98.1-trixie AS builder
 
 ARG BUILD_ARGS=""
 
-COPY --from=webbuilder /pingap /pingap
+RUN  apt-get update \
+  && apt-get install -y cmake libclang-dev wget gnupg ca-certificates lsb-release \
+                        protobuf-compiler --no-install-recommends
 
-RUN apt update \
-  && apt install -y cmake libclang-dev wget gnupg ca-certificates lsb-release protobuf-compiler --no-install-recommends
 RUN rustup target list --installed
+
+COPY .  /pingap
+# admin web assets are embedded from dist/ at compile time (src/plugin/admin.rs)
+COPY --from=webbuilder /pingap/dist /pingap/dist
+
 RUN cd /pingap \
   && cargo build --release ${BUILD_ARGS} \
   && ls -lh target/release

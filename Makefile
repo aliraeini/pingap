@@ -9,6 +9,8 @@
 VERSION := $(shell awk '/^\[workspace\.package\]/{f=1;next} \
 	f&&/^version = /{gsub(/"/,"",$$3);print $$3;exit}' Cargo.toml)
 
+all: release-full
+
 lint:
 	typos
 	cargo clippy --features=full --all-targets --all -- --deny=warnings

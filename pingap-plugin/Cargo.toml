@@ -50,6 +50,7 @@ pingap-config = { workspace = true }
 pingap-core = { workspace = true }
 pingap-util = { workspace = true }
 pingora = { workspace = true }
+proksi-oauth2 = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
@@ -65,9 +66,6 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 uuid = { workspace = true }
 
-
-proksi-oauth2 = { version = "0.5.3", path = "../proksi-oauth2" }
-reqwest = { version = "0.12.12", features = ["json"] }
 short-crypt = "1.0.28"
 
 [dev-dependencies]

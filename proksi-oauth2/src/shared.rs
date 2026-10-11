@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::HashMap};
 use super::provider::OauthUser;
 
 /// Parses an HTTP str (from `http::Uri`) to a Hashmap of query parameters
-pub fn from_string_to_query_params(value: &str) -> HashMap<Cow<str>, Cow<str>> {
+pub fn from_string_to_query_params(value: &str) -> HashMap<Cow<'_, str>, Cow<'_, str>> {
     value
         .split('&')
         .filter_map(|kv| {
@@ -53,25 +53,33 @@ pub fn validate_user_from_provider(
         match validation_type {
             "team_id" => {
                 // Check if the user's team is in the list of allowed teams
-                return validation_values
+                if validation_values
                     .iter()
-                    .any(|v| user.team_ids.contains(&(**v).to_string()));
+                    .any(|v| user.team_ids.contains(&(**v).to_string())) {
+                    return true;
+                }
             }
             "org_id" => {
                 // Check if the user's organization is in the list of allowed organizations
-                return validation_values
+                if validation_values
                     .iter()
-                    .any(|v| user.organization_ids.contains(&(**v).to_string()));
+                    .any(|v| user.organization_ids.contains(&(**v).to_string())) {
+                     return true;
+                }
             }
             "email" => {
                 // Check if the user's email is in the list of allowed emails
-                return validation_values.iter().contains(&&user.email[..]);
+                if validation_values.iter().contains(&&user.email[..]) {
+                   return true;
+                }
             }
             "username" => {
                 // Check if the user's username is in the list of allowed usernames
-                return validation_values
+                if validation_values
                     .iter()
-                    .any(|v| user.usernames.contains(&(*v).to_string()));
+                    .any(|v| user.usernames.contains(&(*v).to_string())) {
+                    return true;
+                }
             }
             _ => {}
         }

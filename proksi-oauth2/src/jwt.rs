@@ -6,6 +6,8 @@ use std::{
 use jsonwebtoken::{encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
+use crate::provider::OauthUser;
+
 /// Struct that holds the claims for a JWT token
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
@@ -18,7 +20,7 @@ pub struct JwtClaims {
 }
 
 /// Generates a JWT token for the given sub
-pub fn encode_jwt(sub: &str, secret: &[u8]) -> Result<String, anyhow::Error> {
+pub fn encode_jwt(sub: &str, secret: &[u8], user: &OauthUser) -> Result<String, anyhow::Error> {
     let start = SystemTime::now();
     let since = start.duration_since(SystemTime::UNIX_EPOCH)?;
 
@@ -31,8 +33,8 @@ pub fn encode_jwt(sub: &str, secret: &[u8]) -> Result<String, anyhow::Error> {
         sub: Cow::Owned(sub.to_string()),
         exp: usize::try_from(in_one_day.as_secs())?,
         iat: usize::try_from(since.as_secs())?,
-        teams: vec![],
-        ids: vec![],
+        teams: user.team_ids.clone(),
+        ids: user.organization_ids.clone(),
         // usernames: vec![],
     };
 
@@ -60,7 +62,13 @@ mod tests {
 
     #[test]
     fn test_encode_jwt_with_secret() {
-        let token = encode_jwt("test", b"secret");
+        let user = OauthUser {
+            email: Cow::Borrowed("test@example.com"),
+            team_ids: vec![],
+            organization_ids: vec![],
+            usernames: vec![],
+        };
+        let token = encode_jwt("test", b"secret", &user);
         assert!(token.is_ok());
     }
 }

@@ -1,4 +1,5 @@
 use cookie::{time::OffsetDateTime, Cookie, SameSite};
+use http::{HeaderMap, HeaderValue};
 
 use crate::jwt;
 
@@ -6,23 +7,29 @@ use super::provider::OauthUser;
 
 // Shared state for Oauth2 flows (should be cleaned up after fetching for the first time)
 // TODO find a way to clean up/expire the state
-const COOKIE_NAME: &str = "__Secure_Auth_PRK_JWT";
+const COOKIE_NAME: &str = "__Pingap_auth_JWT";
 
 /// Creates a secure cookie for the user containing the JWT token
-pub fn create_secure_cookie<'a>(
+pub fn create_secure_cookie(
     user: &OauthUser,
     jwt_secret: &str,
     host: &str,
-) -> Result<Cookie<'a>, anyhow::Error> {
-    let jwt_token = jwt::encode_jwt(&user.email, jwt_secret.as_bytes())?;
+    _current_address: &str,
+) -> Result<Cookie<'static>, anyhow::Error> {
+    let jwt_token = jwt::encode_jwt(&user.email, jwt_secret.as_bytes(), user)?;
 
-    let cookie_domain = extract_cookie_domain(host);
+
+    let host_without_port = host.split(':').next().unwrap_or(host);
+    let cookie_domain = host_without_port.to_owned(); // extract_cookie_domain(host_without_port);
+    // let current_addres = current_address.to_owned();
+
+
     let expiration = OffsetDateTime::now_utc().checked_add(cookie::time::Duration::days(1));
 
     Ok(Cookie::build((COOKIE_NAME, jwt_token))
         .secure(true)
         .domain(cookie_domain)
-        .path("/")
+        .path("/") // @Sync prefix_path
         .expires(expiration)
         .http_only(true)
         .same_site(SameSite::Lax)
@@ -30,82 +37,43 @@ pub fn create_secure_cookie<'a>(
 }
 
 /// Removes the secure cookie for the user
-pub(super) fn _remove_secure_cookie(host: &str) -> Cookie<'static> {
-    let cookie_domain = extract_cookie_domain(host);
-    Cookie::build((COOKIE_NAME, ""))
+pub fn remove_secure_cookie(host: &str) -> Cookie<'static> {
+    let host_without_port = host.split(':').next().unwrap_or(host);
+    let cookie_domain = host_without_port.to_owned(); // 
+    let mut cookie = Cookie::build((COOKIE_NAME, ""))
         .secure(true)
-        .domain(cookie_domain)
-        .path("/")
-        .expires(OffsetDateTime::now_utc().checked_add(cookie::time::Duration::days(1)))
+        .domain(cookie_domain.clone())
+        .path("/")  // @Sync prefix_path
+        //.expires(OffsetDateTime::now_utc().checked_add(cookie::time::Duration::days(1)))
         .http_only(true)
         .same_site(SameSite::Lax)
-        .build()
+        .build();
+    cookie.make_removal();
+    cookie
 }
 
-/// Extracts the domain without subdomain
-/// This function does not support all possible tlds.
-fn extract_cookie_domain(host: &str) -> String {
-    let parts: Vec<&str> = host.split('.').collect();
 
-    if parts.len() <= 2 {
-        host.to_owned()
-    } else {
-        parts[parts.len() - 2..].join(".")
+pub fn get_jwt_cookie(headers: &HeaderMap<HeaderValue>) -> Option<Cookie<'_>> {
+
+    let mut secure_jwt: Option<Cookie> = None;
+    let cookie_header = headers.get_all("cookie");
+
+    for cookie in cookie_header {
+        let Ok(cookie_str) = cookie.to_str() else {
+            continue;
+        };
+
+        // A Cookie header holds several "name=value" pairs; Cookie::parse only reads the first
+        for ck in Cookie::split_parse(cookie_str).flatten() {
+            if ck.name() == COOKIE_NAME {
+                secure_jwt = Some(ck);
+            }
+        }
     }
+    return secure_jwt;
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
-    #[test]
-    fn test_basic_domain() {
-        let host = "example.com";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "example.com");
-    }
-
-    #[test]
-    fn test_domain_with_subdomain() {
-        let host = "sub.example.com";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "example.com");
-    }
-
-    #[test]
-    fn test_domain_with_multiple_subdomains() {
-        let host = "sub.sub.example.com";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "example.com");
-    }
-
-    #[test]
-    fn test_edge_case_single_part_domain() {
-        let host = "localhost";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "localhost");
-    }
-
-    #[test]
-    fn test_edge_case_empty_string() {
-        let host = "";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_domain_with_unusual_tld() {
-        // TODO: fix this use case.
-        // We should return the correct domain
-        let host = "example.co.uk";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "co.uk");
-    }
-
-    #[test]
-    fn test_domain_with_longer_tld() {
-        let host = "example.london";
-        let result = extract_cookie_domain(host);
-        assert_eq!(result, "example.london");
-    }
 }

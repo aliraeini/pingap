@@ -450,6 +450,7 @@ mod mirror;
 mod mock;
 mod oidc;
 mod oauth2;
+mod oauth2_utils;
 mod ping;
 mod redirect;
 mod referer_restriction;

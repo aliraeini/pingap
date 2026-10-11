@@ -1,0 +1,17 @@
+[plugins.myGithubOauth]
+category = "oauth2"
+provider = "github"
+client_id = "my-client-id"
+client_secret = "my-client-secret"
+
+[plugins.myGiteaOauth]
+category = "oauth2"
+provider = "gitea"
+base_url = "https://gitea.example.com"
+client_id = "my-client-id"
+client_secret = "my-client-secret"
+redirect_path = "https://app.example.com/"
+# A user is let in when any one of these matches; leave them all out to let in every Gitea user.
+# Names as in Gitea, case included: an organization as `org`, a team as `org/team`.
+valid_organizations = ["myorg"]
+valid_teams = ["myorg/devs"]

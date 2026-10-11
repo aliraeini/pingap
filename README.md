@@ -1,4 +1,4 @@
-# Pingap
+# [Pingap] fork, with [Proksi] oauth2 plugin (not yet tested in production!)
 
 A reverse proxy and application gateway built on [Cloudflare Pingora](https://github.com/cloudflare/pingora). It is configured through TOML files or a web admin that is part of the binary, takes changes without a restart, and comes with more than thirty plugins.
 
@@ -190,3 +190,6 @@ Pull requests are welcome.
 ## 📄 License
 
 [Apache License, Version 2.0](./LICENSE).
+
+[Pingap]: https://github.com/vicanso/pingap
+[Proksi]: https://github.com/luizfonseca/proksi

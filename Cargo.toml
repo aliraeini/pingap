@@ -113,7 +113,6 @@ kdl = { workspace = true }
 vergen = { version = "10.0.3", features = ["build"] }
 vergen-git2 = "10.0.3"
 
-proksi-oauth2 = { version = "0.5.3", path = "proksi-oauth2" }
 #pingora = { path = "../pingora/pingora", default-features = false, features = [
 
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -252,6 +251,7 @@ members = [
     "pingap-upstream",
     "pingap-util",
     "pingap-webhook",
+    "proksi-oauth2",
 ]
 [workspace.package]
 version = "0.15.0"
@@ -366,6 +366,7 @@ pem = "4.0.0"
 # Replaces tldextract, whose idna 0.2 dependency carries RUSTSEC-2024-0421;
 # the public suffix list is compiled in, no runtime fetching.
 psl = "2.1.232"
+proksi-oauth2 = { version = "0.5.3", path = "proksi-oauth2" }
 prometheus = { version = "0.14.0", default-features = false }
 rand = "0.10.2"
 # aws_lc_rs: the backend that can make RSA keys (ACME, `acme_key_type`)
@@ -375,6 +376,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "query",
     "json",
     "default-tls",
+    "form",
 ] }
 rustls = "0.23.40"
 rustls-pki-types = "1.15.1"
