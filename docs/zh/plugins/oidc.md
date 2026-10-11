@@ -23,6 +23,10 @@
 | `cookie_name` | string | `pingap_oidc` | 会话 cookie 的名字。不能以 `__Host-` 开头。 |
 | `session_ttl` | duration | `12h` | 一次登录保持多久。至少 `1m`。 |
 | `claims_to_headers` | string[] | `[]` | `claim:Header-Name`：把身份提供方给出的用户信息发给上游。请求头名取最后一个冒号之后的部分，所以名字是 `https://example.com/roles` 这样的 claim 也能用。不能是 `Host`、`Connection`、`Content-Length`、`Transfer-Encoding`。 |
+| `allowed_emails` | string[] | `[]` | 按 `email` claim 限定谁能登录，不区分（ASCII）大小写。只有身份提供方给出 `email_verified: true` 时邮箱才算：不给出它的身份提供方（比如 Entra ID）可能发来账户所有者自己填写的地址。需要 `email` scope。 |
+| `allowed_usernames` | string[] | `[]` | 按 `preferred_username` claim 限定谁能登录。需要 `profile` scope。只用于用户名唯一、且你信得过的身份提供方，比如自己的 Gitea：大多数公共身份提供方允许用户修改用户名，Entra ID 的这个值也未经验证。 |
+| `allowed_groups` | string[] | `[]` | 按 `groups` claim 限定谁能登录：用户的某个组在列表里即可。请求了 `groups` scope 时，Gitea 把组织写成 `org`，团队写成 `org:team`。只写已经存在的组：Gitea 默认任何用户都能创建组织，列出却不存在的组（写错的，或被删掉的）谁都可以去创建。 |
+| `end_session_url` | string | — | 退出登录时浏览器被带去的地址，取代身份提供方给出的 `end_session_endpoint`——用于不提供它的身份提供方，比如 Gitea。 |
 
 `client_secret` 和 `cookie_secret` 是凭据：配置变更的日志里会被遮蔽，可以写成 `$ENV:NAME` 或 `$FILE:/path`。
 
@@ -53,16 +57,34 @@ plugins = ["login"]
 - **没有会话，浏览器在访问页面**（`GET` 且 `Sec-Fetch-Mode: navigate`；浏览器不发这个头时，看 `Accept` 里有没有 `text/html`）：重定向到身份提供方。
 - **没有会话，其他请求**（脚本发起的 fetch、提交的表单、API 客户端）：`401 Login required`。这类请求没法跟着跳到登录页，提交的表单还会丢掉提交的内容。
 - **`redirect_path`：** 登录的最后一步，见下文。
-- **`logout_path`：** 去掉会话 cookie；身份提供方有结束自己会话的地址（`end_session_endpoint`）时，把浏览器带着 `client_id` 重定向过去，否则返回一句 `Logged out`。到这个路径的任何请求都会这样处理，不看方法、也不看来源：其他站点可以把浏览器引到这里让用户退出登录，但也仅此而已。
+- **`logout_path`：** 去掉会话 cookie；有结束身份提供方会话的地址（`end_session_url`，否则是身份提供方给出的 `end_session_endpoint`）时，把浏览器带着 `client_id` 重定向过去，否则返回一句 `Logged out`。到这个路径的任何请求都会这样处理，不看方法、也不看来源：其他站点可以把浏览器引到这里让用户退出登录，但也仅此而已。
 
 `redirect_path`（以及 `logout_path`）必须能匹配到带有这个插件的 location——可以是提供页面的那个，也可以是另一个带同一个插件的。它们和客户端发来的原始路径比较，登录后回到的页面也是客户端发来的原始地址：location 的 `rewrite` 不影响这两点。
+
+## 谁能登录
+
+`allowed_emails`、`allowed_usernames`、`allowed_groups` 都不设置时，身份提供方让登录的人都能登录。设置了任何一个，用户要匹配其中某一个列表的某一项；其他人得到 `403 Login refused: this account is not allowed here`，日志里记一条带 `sub` 的 `oidc login not allowed`。这个检查只在登录时做，不是每个请求都做：见下面关于会话的说明。这些列表是加密会话所用密钥的一部分，所以修改它们会结束这个插件的所有会话，列表不同的插件也不会接受这个插件的会话。
+
+```toml
+[plugins.gitea_login]
+category = "oidc"
+issuer = "https://git.example.com"
+client_id = "$ENV:GITEA_CLIENT_ID"
+client_secret = "$ENV:GITEA_CLIENT_SECRET"
+cookie_secret = "$ENV:PINGAP_COOKIE_SECRET"
+scopes = ["profile", "groups"]
+allowed_usernames = ["ada"]
+allowed_groups = ["staff", "staff:devs"]
+logout_path = "/oauth2/logout"
+end_session_url = "https://git.example.com/user/logout"
+```
 
 ## 登录过程
 
 1. 浏览器被重定向到身份提供方的 `authorization_endpoint`，带着 `response_type=code`、客户端、scope、随机的 `state` 和 `nonce`，以及 PKCE 的 challenge（`S256`）。属于这次登录的东西——state、nonce、PKCE 的 verifier、浏览器原本要去的页面——保存在一个只发给 `redirect_path` 的加密 cookie 里，有效 10 分钟。两个标签页同时登录各有各的 cookie；一次登录完成时，会顺带清掉没有走完的那些登录留下的 cookie。页面地址太长、放不进 cookie 时（约 2.6 KB），登录后不回到那个页面，而是回到 `/`。
 2. 身份提供方把浏览器带着 `code` 和 `state` 送回 `redirect_path`。请求里没有带着这个 state 对应的登录 cookie 时，返回 `400`，不会去问身份提供方。
 3. 用 code 向 `token_endpoint` 换取 token（带上 PKCE 的 verifier；客户端用 `client_secret_basic` 认证，身份提供方声明不支持时用 `client_secret_post`）。
-4. ID token 必须由身份提供方的某个公钥签名（`jwks_uri`，只接受非对称算法）、由 `issuer` 签发、受众是这个 `client_id`、没有过期，并且带着这次登录的 `nonce`。任何一项不满足都是 `502 Login failed`，原因在日志里（`oidc login failed`）。
+4. ID token 必须由身份提供方的某个公钥签名（`jwks_uri`，只接受非对称算法）、由 `issuer` 签发、受众是这个 `client_id`、没有过期，并且带着这次登录的 `nonce`。任何一项不满足都是 `502 Login failed`，原因在日志里（`oidc login failed`）。之后，设置了允许列表时，再按它们检查用户。
 5. 会话的内容是 `sub` 和 `claims_to_headers` 里列出的 claim，有效期 `session_ttl`，cookie 带 `HttpOnly`、`SameSite=Lax`，站点通过 TLS 访问时还带 `Secure`。浏览器被送回它原本要去的页面——只会是本站的路径，不会是其他站点。
 
 身份提供方拒绝登录（`error=access_denied`）时返回 `403`。
@@ -75,4 +97,4 @@ plugins = ["login"]
 - **前面还有代理或 CDN 时**，告诉身份提供方的回调地址是按请求拼出来的：到 Pingap 的连接是 TLS 就用 `https`，主机名取请求的 `Host`。这和浏览器实际使用的地址不一致时，设置 `redirect_url`；这时 cookie 是否带 `Secure` 看它是不是 `https`。
 - **身份提供方的元数据** 在第一个需要它的请求到来时读取，保留一小时；公钥保留一小时，token 指明的公钥不在其中时重新读取。身份提供方连不上不影响已有会话的请求。连不上期间只是隔一段时间（一次尝试结束 10 秒之后）才再试一次，不是每个请求都去试：其余的请求立即得到 `502`。
 - **和 `cache` 一起用时：** 把这个插件放在它前面，和所有“决定谁能访问”的插件一样。缓存里的响应是给所有有会话的人的，不是给某一个用户的：属于单个用户的内容要在上游标记 `Cache-Control: private`。
-- **多个 location 共用一次登录。** cookie 是按主机名生效的。同一个主机名下共用这个插件的 location 共用会话；另配一个 `cookie_name` 和 `redirect_path` 都不同的插件，则有自己独立的登录。
+- **多个 location 共用一次登录。** cookie 是按主机名生效的。同一个主机名下共用这个插件的 location 共用会话；另配一个 `cookie_name` 和 `redirect_path` 都不同的插件，则有自己独立的登录。`issuer`、`client_id`、`cookie_secret`、`cookie_name` 和允许列表都相同的两个插件也共用一个会话，各自有自己的 `redirect_path` 和 `logout_path`：在任一个登录就是两个都登录了，退出也一样。每个 `redirect_path` 都要在身份提供方登记。

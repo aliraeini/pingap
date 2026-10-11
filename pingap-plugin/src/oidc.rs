@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -88,6 +88,14 @@ pub struct Oidc {
     redirect_url: Option<String>,
     /// Ends the session, when set.
     logout_path: Option<String>,
+    /// Where a browser goes to end the session at the provider, in place
+    /// of the `end_session_endpoint` it names, or for one that names none.
+    end_session_url: Option<String>,
+    /// Who may log in: one match in any list is enough, and with no list
+    /// set anybody the provider logs in may. Emails are kept lower case.
+    allowed_emails: Vec<String>,
+    allowed_usernames: Vec<String>,
+    allowed_groups: Vec<String>,
     /// The scopes asked for, with spaces between.
     scopes: String,
     cookie_name: String,
@@ -257,6 +265,36 @@ impl TryFrom<&PluginConf> for Oidc {
                 )));
             }
         }
+        let end_session_url = Some(get_str_conf(value, "end_session_url"))
+            .filter(|url| !url.is_empty());
+        if let Some(url) = &end_session_url
+            && !is_http_url(url)
+        {
+            return Err(invalid(format!(
+                "end_session_url: {url:?} is not an http or https url"
+            )));
+        }
+        // Sorted and without repeats: the lists go into the key, and the
+        // same lists written in another order are the same lists.
+        let allowed = |name: &str| -> Vec<String> {
+            let mut items: Vec<String> = get_str_slice_conf(value, name)
+                .iter()
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+            items.sort();
+            items.dedup();
+            items
+        };
+        // ASCII case only: a Unicode lowering makes `K` (Kelvin) a `k`.
+        let mut allowed_emails: Vec<String> = allowed("allowed_emails")
+            .iter()
+            .map(|email| email.to_ascii_lowercase())
+            .collect();
+        allowed_emails.sort();
+        allowed_emails.dedup();
+        let allowed_usernames = allowed("allowed_usernames");
+        let allowed_groups = allowed("allowed_groups");
         let mut scopes = vec!["openid".to_string()];
         for scope in get_str_slice_conf(value, "scopes") {
             let scope = scope.trim().to_string();
@@ -301,14 +339,35 @@ impl TryFrom<&PluginConf> for Oidc {
         // Made of the secret and of whom the sessions are from and for: a
         // second plugin with the same secret and another provider, or
         // another client of it, does not take them for its own.
-        let key: [u8; 32] = Sha256::new()
+        let mut hasher = Sha256::new()
             .chain_update(cookie_secret.as_bytes())
             .chain_update([0])
             .chain_update(issuer.as_bytes())
             .chain_update([0])
-            .chain_update(client_id.as_bytes())
-            .finalize()
-            .into();
+            .chain_update(client_id.as_bytes());
+        // And of who may log in, as the allow-lists are checked at login
+        // alone: a session one plugin let in is not taken by another with
+        // other lists - nor by this one once its lists are changed. Each
+        // entry goes with its length, so no two sets of lists hash alike.
+        if !allowed_emails.is_empty()
+            || !allowed_usernames.is_empty()
+            || !allowed_groups.is_empty()
+        {
+            for (name, items) in [
+                ("allowed_emails", &allowed_emails),
+                ("allowed_usernames", &allowed_usernames),
+                ("allowed_groups", &allowed_groups),
+            ] {
+                hasher.update([0]);
+                hasher.update(name.as_bytes());
+                hasher.update((items.len() as u64).to_le_bytes());
+                for item in items.iter() {
+                    hasher.update((item.len() as u64).to_le_bytes());
+                    hasher.update(item.as_bytes());
+                }
+            }
+        }
+        let key: [u8; 32] = hasher.finalize().into();
         let client = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             // What the provider sends is taken from the provider, not
@@ -325,6 +384,10 @@ impl TryFrom<&PluginConf> for Oidc {
             redirect_path,
             redirect_url,
             logout_path,
+            end_session_url,
+            allowed_emails,
+            allowed_usernames,
+            allowed_groups,
             scopes: scopes.join(" "),
             cookie_name,
             key,
@@ -727,6 +790,17 @@ impl Oidc {
             .exchange(&provider, &code, &login, &redirect_uri)
             .await
             .map_err(Refusal::Provider)?;
+        if !self.is_allowed(&claims) {
+            info!(
+                category = CATEGORY,
+                issuer = self.issuer,
+                sub = claims.get("sub").and_then(|sub| sub.as_str()),
+                "oidc login not allowed"
+            );
+            return Err(Refusal::Denied(
+                "Login refused: this account is not allowed here".to_string(),
+            ));
+        }
 
         // What is kept of the user: who it is, and what goes upstream.
         let mut kept = ClaimMap::new();
@@ -789,13 +863,58 @@ impl Oidc {
         Ok(no_store(response))
     }
 
+    /// Whether the allow-lists let in the user these claims are of. An
+    /// email counts only when the provider says it is verified: one that
+    /// says nothing (Entra ID) may send what an account's owner wrote in.
+    /// `groups` may be a list or a single name.
+    fn is_allowed(&self, claims: &ClaimMap) -> bool {
+        if self.allowed_emails.is_empty()
+            && self.allowed_usernames.is_empty()
+            && self.allowed_groups.is_empty()
+        {
+            return true;
+        }
+        let text =
+            |name: &str| claims.get(name).and_then(|value| value.as_str());
+        // A boolean, or the text of one as some providers send it.
+        let email_verified = match claims.get("email_verified") {
+            Some(serde_json::Value::Bool(verified)) => *verified,
+            Some(serde_json::Value::String(verified)) => verified == "true",
+            _ => false,
+        };
+        if email_verified
+            && let Some(email) = text("email")
+            && self.allowed_emails.contains(&email.to_ascii_lowercase())
+        {
+            return true;
+        }
+        if let Some(username) = text("preferred_username")
+            && self.allowed_usernames.iter().any(|name| name == username)
+        {
+            return true;
+        }
+        let groups: Vec<&str> = match claims.get("groups") {
+            Some(serde_json::Value::Array(items)) => {
+                items.iter().filter_map(|item| item.as_str()).collect()
+            },
+            Some(serde_json::Value::String(group)) => vec![group.as_str()],
+            _ => vec![],
+        };
+        groups
+            .iter()
+            .any(|group| self.allowed_groups.iter().any(|name| name == group))
+    }
+
     /// Ends the session: the cookie goes, and the browser is sent to
     /// where the provider ends its own, when it has such a place.
     async fn logout(&self, ctx: &Ctx) -> HttpResponse {
-        let end_session = self
-            .provider()
-            .await
-            .and_then(|provider| provider.end_session_endpoint.clone());
+        let end_session = match &self.end_session_url {
+            Some(url) => Some(url.clone()),
+            None => self
+                .provider()
+                .await
+                .and_then(|provider| provider.end_session_endpoint.clone()),
+        };
         let mut response = end_session
             .and_then(|url| {
                 let separator = if url.contains('?') { '&' } else { '?' };
@@ -1090,6 +1209,10 @@ Xy9d98XlTMj+HdE8reX0ymEIpLbCDnS5WhaUEhNcxGGHktUH/3e9BlrR
             (
                 "redirect_url = \"/oauth2/callback\"",
                 "redirect_url should be",
+            ),
+            (
+                "end_session_url = \"/logout\"",
+                "end_session_url: \"/logout\" is not an http or https url",
             ),
             ("scopes = [\"a b\"]", "is not a scope"),
             ("cookie_name = \"a=b\"", "cookie_name"),
@@ -2225,6 +2348,214 @@ Pz7glwkTfq+X/7U/TTdWanLivIQqzKjyNBu3kgzx7GeUYcjtuw4RKof6
                 "pingap_oidc_bbbb2222"
             ],
             cleared
+        );
+    }
+
+    /// Who the allow-lists let in: one match in any of them, and anybody
+    /// when none is set.
+    #[test]
+    fn test_oidc_allow_lists() {
+        let claims = |value: serde_json::Value| -> ClaimMap {
+            value.as_object().unwrap().clone()
+        };
+        let ada = claims(serde_json::json!({
+            "sub": "1",
+            "email": "Ada@Example.test",
+            "email_verified": true,
+            "preferred_username": "ada",
+            "groups": ["math", "math:devs"],
+        }));
+
+        assert_eq!(true, new_plugin("").unwrap().is_allowed(&ada));
+
+        let allowed = |extra: &str, claims: &ClaimMap| {
+            new_plugin(extra).unwrap().is_allowed(claims)
+        };
+        // Emails are matched whatever their case.
+        assert_eq!(
+            true,
+            allowed("allowed_emails = [\"ada@example.TEST\"]", &ada)
+        );
+        assert_eq!(true, allowed("allowed_usernames = [\"ada\"]", &ada));
+        assert_eq!(true, allowed("allowed_groups = [\"math:devs\"]", &ada));
+        // One list that matches is enough.
+        assert_eq!(
+            true,
+            allowed(
+                "allowed_usernames = [\"bob\"]\nallowed_groups = [\"math\"]",
+                &ada
+            )
+        );
+        assert_eq!(
+            false,
+            allowed(
+                "allowed_usernames = [\"Ada\"]\nallowed_groups = [\"math:ops\", \"physics\"]",
+                &ada
+            )
+        );
+        // An email counts only when the provider says it is verified:
+        // not when it says it is not, nor when it says nothing.
+        let email_rule = "allowed_emails = [\"ada@example.test\"]";
+        let verified = |value: Option<serde_json::Value>| {
+            let mut claims = ada.clone();
+            match value {
+                Some(value) => {
+                    claims.insert("email_verified".to_string(), value);
+                },
+                None => {
+                    claims.remove("email_verified");
+                },
+            }
+            allowed(email_rule, &claims)
+        };
+        assert_eq!(false, verified(Some(false.into())));
+        assert_eq!(false, verified(None));
+        assert_eq!(false, verified(Some("false".into())));
+        assert_eq!(false, verified(Some(1.into())));
+        assert_eq!(true, verified(Some("true".into())));
+        // Case is ASCII case: the Kelvin sign is not a `k`.
+        let mut kelvin = ada.clone();
+        kelvin.insert("email".to_string(), "ada@example.test\u{212A}".into());
+        assert_eq!(
+            false,
+            allowed("allowed_emails = [\"ada@example.testk\"]", &kelvin)
+        );
+        // A single group, as some providers send it.
+        let single = claims(serde_json::json!({"sub": "1", "groups": "math"}));
+        assert_eq!(true, allowed("allowed_groups = [\"math\"]", &single));
+        // Nothing to match.
+        let bare = claims(serde_json::json!({"sub": "1"}));
+        assert_eq!(false, allowed("allowed_groups = [\"math\"]", &bare));
+    }
+
+    /// The allow-lists are checked at login alone, so they go into the key
+    /// of the sessions: a session is not taken by a plugin with other
+    /// lists, while the same lists in another order share it.
+    #[test]
+    fn test_oidc_sessions_are_of_the_allow_lists() {
+        let data = SessionData {
+            exp: now_sec() + 60,
+            claims: ClaimMap::new(),
+        };
+        let open = new_plugin("").unwrap();
+        let staff = new_plugin(
+            "allowed_groups = [\"staff\", \"staff:devs\"]\nallowed_usernames = [\"ada\"]",
+        )
+        .unwrap();
+        let reads = |from: &Oidc, to: &Oidc| {
+            to.unseal::<SessionData>(&from.seal(&data).unwrap())
+                .is_some()
+        };
+        // A plugin that lets anybody in does not hand its sessions to one
+        // that does not, nor the other way.
+        assert_eq!(false, reads(&open, &staff));
+        assert_eq!(false, reads(&staff, &open));
+        // The same lists, written in another order and with a repeat.
+        let same = new_plugin(
+            "allowed_usernames = [\"ada\", \"ada\"]\nallowed_groups = [\" staff:devs\", \"staff\"]",
+        )
+        .unwrap();
+        assert_eq!(true, reads(&staff, &same));
+        // Lists that differ in one entry, or in which list an entry is in.
+        for other in [
+            "allowed_groups = [\"staff\"]\nallowed_usernames = [\"ada\"]",
+            "allowed_groups = [\"staff\", \"staff:devs\"]\nallowed_usernames = [\"bob\"]",
+            "allowed_groups = [\"staff\", \"staff:devs\", \"ada\"]",
+            "allowed_groups = [\"staff\", \"staff:devs\"]\nallowed_emails = [\"ada\"]",
+        ] {
+            assert_eq!(
+                false,
+                reads(&staff, &new_plugin(other).unwrap()),
+                "{other}"
+            );
+        }
+        // Without lists the key is what it always was: another plugin of
+        // the same client with no lists still shares the session.
+        assert_eq!(true, reads(&open, &new_plugin("").unwrap()));
+    }
+
+    /// A user the allow-lists do not let in gets no session.
+    #[tokio::test]
+    async fn test_oidc_callback_refuses_who_is_not_allowed() {
+        let endpoint = Arc::new(TokenEndpoint::default());
+        let token_url = serve(endpoint.clone()).await;
+        let plugin = new_plugin("allowed_groups = [\"math\"]").unwrap();
+        plugin.provider.store(Some(provider(&token_url)));
+        let login = Login {
+            state: "state-0123456789".to_string(),
+            verifier: "the-verifier".to_string(),
+            nonce: "the-nonce".to_string(),
+            url: "/".to_string(),
+            exp: now_sec() + 300,
+        };
+        let request = format!(
+            "GET /oauth2/callback?code=c-1&state={} HTTP/1.1\r\nHost: app.test\r\nCookie: {}={}\r\n\r\n",
+            login.state,
+            plugin.login_cookie_name(&login.state),
+            plugin.seal(&login).unwrap()
+        );
+        for (groups, allowed) in
+            [(vec!["math"], true), (vec!["physics"], false)]
+        {
+            let token = encode(
+                &Header::new(Algorithm::ES256),
+                &serde_json::json!({
+                    "iss": "https://idp.test",
+                    "aud": "pingap",
+                    "sub": "u-1",
+                    "exp": now_sec() + 300,
+                    "nonce": "the-nonce",
+                    "groups": groups,
+                }),
+                &EncodingKey::from_ec_pem(PRIVATE_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap();
+            *endpoint.answer.lock().unwrap() =
+                serde_json::json!({"id_token": token}).to_string();
+            let session = new_session(&request).await;
+            let result = plugin.callback(&session, &Ctx::default()).await;
+            if allowed {
+                assert_eq!(true, result.is_ok());
+            } else {
+                assert_eq!(
+                    Err(Refusal::Denied(
+                        "Login refused: this account is not allowed here"
+                            .to_string()
+                    )),
+                    result.map(|_| ())
+                );
+            }
+        }
+    }
+
+    /// Logging out goes to `end_session_url` when it is set, whatever the
+    /// provider names, and without asking it.
+    #[tokio::test]
+    async fn test_oidc_end_session_url() {
+        let plugin = new_plugin(
+            "logout_path = \"/bye\"\nend_session_url = \"https://idp.test/user/logout\"",
+        )
+        .unwrap();
+        let mut session =
+            new_session("GET /bye HTTP/1.1\r\nHost: app.test\r\n\r\n").await;
+        let result = plugin
+            .handle_request(
+                PluginStep::Request,
+                &mut session,
+                &mut Ctx::default(),
+            )
+            .await
+            .unwrap();
+        let RequestPluginResult::Respond(response) = result else {
+            panic!("no response");
+        };
+        assert_eq!(
+            vec!["https://idp.test/user/logout?client_id=pingap"],
+            header_of(&response, "location")
+        );
+        assert_eq!(
+            vec!["pingap_oidc=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"],
+            header_of(&response, "set-cookie")
         );
     }
 }
