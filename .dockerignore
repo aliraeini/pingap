@@ -1,0 +1,9 @@
+target/
+debug/
+node_modules/
+.git/
+.dockerignore
+web/node_modules/
+website/node_modules/
+website/.vitepress/dist/
+website/.vitepress/cache/
