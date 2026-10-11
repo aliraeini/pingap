@@ -29,6 +29,10 @@ on the proxy, and every instance that has the same `cookie_secret` reads it.
 | `cookie_name` | string | `pingap_oidc` | The name of the session cookie. Not one that begins with `__Host-`. |
 | `session_ttl` | duration | `12h` | How long a login lasts. At least `1m`. |
 | `claims_to_headers` | string[] | `[]` | `claim:Header-Name` entries: what the provider says of the user, sent to the upstream. The header is what follows the last colon, so a claim named `https://example.com/roles` works. Not `Host`, `Connection`, `Content-Length` or `Transfer-Encoding`. |
+| `allowed_emails` | string[] | `[]` | Who may log in, by the `email` claim, whatever its (ASCII) case. An email counts only when the provider says `email_verified: true`: one that says nothing, as Entra ID, may send an address the account's owner typed in. Needs the `email` scope. |
+| `allowed_usernames` | string[] | `[]` | Who may log in, by the `preferred_username` claim. Needs the `profile` scope. Only for a provider whose usernames are unique and that you trust with them, such as your own Gitea: at most public providers a user can change theirs, and at Entra ID it is not verified. |
+| `allowed_groups` | string[] | `[]` | Who may log in, by the `groups` claim: one of the user's groups has to be in the list. Gitea sends an organization as `org` and a team as `org:team`, when the `groups` scope is asked for. Name only groups that exist: any Gitea user can create an organization by default, so one that is listed and missing (a typo, or one that was deleted) is anybody's to make. |
+| `end_session_url` | string | — | Where logging out sends the browser, in place of the `end_session_endpoint` the provider names - for a provider that names none, as Gitea does. |
 
 `client_secret` and `cookie_secret` are credentials: they are masked in what is
 logged of a change of the configuration, and can be written `$ENV:NAME` or
@@ -74,8 +78,9 @@ redirect address of the client.
   to a login page, and a posted form would lose what it posted.
 - **`redirect_path`:** the end of a login, see below.
 - **`logout_path`:** the session cookie is taken away and the browser is sent
-  to where the provider ends its own session (`end_session_endpoint`, with the
-  `client_id`), when it has such a place; otherwise the answer is a plain
+  to where the provider ends its own session (`end_session_url`, or else the
+  `end_session_endpoint` it names, with the `client_id`), when there is such a
+  place; otherwise the answer is a plain
   `Logged out`. Any request to the path does it, whatever its method and
   wherever it comes from: another site can log a user out by sending the
   browser there, and nothing more than that.
@@ -85,6 +90,31 @@ plugin - the one the pages are served by, or another with the same plugin.
 They are compared with the path as the client sent it, and the page a login
 goes back to is the address as the client sent it: a `rewrite` of the location
 does not change either.
+
+## Who may log in
+
+With none of `allowed_emails`, `allowed_usernames` and `allowed_groups`
+set, anybody the provider logs in may. With any of them set, a user has to
+match one entry of one of them; the others are answered `403 Login refused:
+this account is not allowed here`, and the log says `oidc login not
+allowed` with their `sub`. It is checked when the user logs in, not on each
+request: see the session below. The lists are part of the key the sessions
+are encrypted with, so changing them ends every session of the plugin, and
+a plugin with other lists does not take this one's sessions.
+
+```toml
+[plugins.gitea_login]
+category = "oidc"
+issuer = "https://git.example.com"
+client_id = "$ENV:GITEA_CLIENT_ID"
+client_secret = "$ENV:GITEA_CLIENT_SECRET"
+cookie_secret = "$ENV:PINGAP_COOKIE_SECRET"
+scopes = ["profile", "groups"]
+allowed_usernames = ["ada"]
+allowed_groups = ["staff", "staff:devs"]
+logout_path = "/oauth2/logout"
+end_session_url = "https://git.example.com/user/logout"
+```
 
 ## The login
 
@@ -107,6 +137,7 @@ does not change either.
    `client_id`, not expired, and carry the `nonce` of this login. Anything
    else is `502 Login failed`, with the reason in the log
    (`oidc login failed`).
+   Then the user is held to the allow-lists, when there are any.
 5. The session is `sub` and the claims named in `claims_to_headers`, good
    for `session_ttl`, in a cookie that is `HttpOnly`, `SameSite=Lax` and, on a
    site reached over TLS, `Secure`. The browser is sent to the page it was
@@ -143,4 +174,8 @@ A provider that refuses (`error=access_denied`) is answered `403`.
   upstream.
 - **Several locations, one login.** The cookie is for the host. Locations of
   one host that share the plugin share the session; a second plugin with
-  another `cookie_name` and `redirect_path` keeps a login of its own.
+  another `cookie_name` and `redirect_path` keeps a login of its own. Two
+  plugins with the same `issuer`, `client_id`, `cookie_secret`,
+  `cookie_name` and allow-lists share one session too, each with a `redirect_path` and
+  `logout_path` of its own: a login at either is a login at both, and so is
+  a logout. Each `redirect_path` has to be registered at the provider.
