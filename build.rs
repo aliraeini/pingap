@@ -14,6 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_instructions(&build)?
         .add_instructions(&git2)?
         .emit()?;
+    // Without .git (the Docker build) the commit comes in this variable.
+    // Cargo is told to watch it: with target/ kept between builds, the
+    // output of this script would otherwise keep the first commit it saw.
+    println!("cargo:rerun-if-env-changed=VERGEN_GIT_SHA");
 
     Ok(())
 }

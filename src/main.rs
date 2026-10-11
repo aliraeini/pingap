@@ -1493,7 +1493,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let upstream_health_check_task = new_upstream_health_check_task(
         new_upstream_provider(),
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         webhook::get_webhook_sender(),
     );
     let name = upstream_health_check_task.name().to_string();

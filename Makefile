@@ -9,6 +9,9 @@
 VERSION := $(shell awk '/^\[workspace\.package\]/{f=1;next} \
 	f&&/^version = /{gsub(/"/,"",$$3);print $$3;exit}' Cargo.toml)
 
+buildDocker:
+	podman build --build-arg GIT_SHA=$$(git -C pingap rev-parse --short HEAD) -t pingap:latest .
+
 lint:
 	typos
 	cargo clippy --features=full --all-targets --all -- --deny=warnings

@@ -1,0 +1,13 @@
+target/
+debug/
+node_modules/
+.git/
+.dockerignore
+web/node_modules/
+website/node_modules/
+website/.vitepress/dist/
+website/.vitepress/cache/
+# Built in the image: a local build would mix stale files into the embedded
+# admin assets, and invalidate the cargo layer whenever it changes
+dist/
+web/dist/

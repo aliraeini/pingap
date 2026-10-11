@@ -1206,7 +1206,8 @@ impl LocationConf {
                 && !upstream_names.contains(&upstream)
             {
                 return Err(Error::Invalid {
-                    message: format!("upstream({upstream}) is not found"),
+                    message: format!("upstream({}) is not found, (in:{})",
+                                      upstream, upstream_names.join(", ")),
                 });
             }
         }
